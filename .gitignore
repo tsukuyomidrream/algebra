@@ -1,0 +1,7 @@
+__marimo__/
+pycache/
+*.pyc
+.env
+.venv/
+.claude/
+.vscode/
