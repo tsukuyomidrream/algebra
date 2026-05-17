@@ -435,7 +435,7 @@ def _():
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     # 8. Мультипликативное обратное по $\bmod n$
@@ -458,6 +458,22 @@ def _(mo):
     $$a^{-1} \equiv a^{\varphi(n)-1} \pmod{n}$$
 
     Обратный элемент — это $a$ в степени $\varphi(n) - 1$.
+
+    ---
+
+    ## Частный случай — малая теорема Ферма
+
+    **Малая теорема Ферма:** если $p$ — простое число и $\gcd(a, p) = 1$, то:
+
+    $$a^{p-1} \equiv 1 \pmod{p}$$
+
+    Это **частный случай теоремы Эйлера** при $n = p$ (простое), потому что $\varphi(p) = p - 1$.
+
+    Перепишем теорему: $a \cdot a^{p-2} \equiv 1 \pmod{p}$. Получаем формулу обратного:
+
+    $$a^{-1} \equiv a^{p-2} \pmod{p}$$
+
+    То есть **если модуль простой — обратный считается как $a^{p-2}$**. Это удобнее, чем считать $\varphi(n)$, потому что не нужно факторизовать $n$.
 
     ---
 
@@ -555,6 +571,524 @@ def _():
     print(f"x = {x}")
     for a, n in zip(remainders, moduli):
         print(f"  {x} mod {n} = {x % n}  (ожидалось {a})")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    #Деление полиномов над целостным кольцом
+
+    #### Постановка задачи
+
+    Для многочленов $a(x), b(x)$ над целостным кольцом $R$ ($b \ne 0$) найти такие $q(x), r(x) \in R[x]$, что:
+
+    $$
+    a(x) = q(x) \cdot b(x) + r(x), \quad \deg r < \deg b
+    $$
+
+    Деление возможно не всегда: на каждом шаге старший коэффициент $b$ должен делить текущий старший коэффициент остатка.
+    В кольце многочленов над полем деление возможно всегда.
+
+    ---
+
+    #### Алгоритм «школьного» деления
+
+    1. Пока $\deg a \ge \deg b$:
+        - Берём $c = \dfrac{a_{\text{старш}}}{b_{\text{старш}}}$, $k = \deg a - \deg b$.
+        - Прибавляем $c \cdot x^k$ к частному.
+        - Вычитаем $c \cdot x^k \cdot b(x)$ из $a(x)$.
+    2. Остаток — то, что получилось от $a(x)$.
+
+    Многочлен хранится списком коэффициентов: p[i] — коэффициент при $x^i$.
+    """)
+    return
+
+
+@app.function
+def poly_trim(p):
+    # Убираем ведущие нули, чтобы старший коэффициент был не нулевой
+    while len(p) > 1 and p[-1] == 0:
+        p.pop()
+    return p
+
+
+@app.function
+def poly_divmod(a, b):
+    """
+    Делит многочлен a на b в целостном кольце.
+    Возвращает (q, r): a = q*b + r, deg(r) < deg(b).
+    Бросает ValueError, если деление в кольце невозможно.
+    """
+    a = poly_trim(a[:])
+    b = poly_trim(b[:])
+
+    if b == [0]:
+        raise ValueError("Деление на нулевой многочлен")
+
+    deg_b = len(b) - 1
+    lead_b = b[-1]
+
+    # Частное заранее не знаем по длине — будем дополнять
+    q = [0] * max(1, len(a) - deg_b)
+
+    # Пока степень остатка не меньше степени делителя
+    while len(a) - 1 >= deg_b and a != [0]:
+        lead_a = a[-1]
+
+        # Деление старших коэффициентов должно быть точным
+        if lead_a % lead_b != 0:
+            raise ValueError("Деление невозможно в данном кольце")
+
+        coef = lead_a // lead_b
+        shift = len(a) - 1 - deg_b
+        q[shift] = coef
+
+        # Вычитаем coef * x^shift * b(x) из a(x)
+        for i in range(deg_b + 1):
+            a[shift + i] -= coef * b[i]
+
+        poly_trim(a)
+
+    return poly_trim(q), a
+
+
+@app.cell
+def _():
+    # (x^3 - 1) : (x - 1) = x^2 + x + 1
+    poly_divmod([-1, 0, 0, 1], [-1, 1])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # 11.  Вычисления в простых конечных полях (произведение и возведение в степень через битовые операции).
+
+    **Поле Галуа** $\mathrm{GF}(q)$ — это поле из конечного числа элементов, причём количество элементов всегда:
+
+    $$q = p^n$$
+
+    где $p$ — простое число, $n$ — натуральное ($n \ge 1$).
+
+
+    ## Идея алгоритма умножения в $\mathrm{GF}(p)$
+
+    Хотим посчитать $a \cdot b \bmod p$.
+
+    1. Приводим `a` и `b` по модулю `p` — чтобы остаться в поле.
+    2. Заводим `result = 0` — сюда копим ответ.
+    3. **Пока в `b` остались биты** (`b > 0`), идём по битам справа налево:
+       - Если **последний бит `b` = 1** → прибавляем текущее `a` к `result` (по модулю `p`).
+       - Если **последний бит `b` = 0** → пропускаем.
+       - **В любом случае:** удваиваем `a` (по модулю `p`) — готовим к следующей степени двойки.
+       - Сдвигаем `b` вправо на 1 бит — открываем следующий бит.
+    4. Когда все биты `b` обработаны (`b = 0`) — возвращаем `result`.
+    """)
+    return
+
+
+@app.function
+def gfp_mul(a, b, p):
+    # умножение в GF(p) сдвигами и сложениями
+    a %= p
+    b %= p
+    result = 0
+    while b > 0:
+        if b & 1:                    # младший бит b
+            result = (result + a) % p
+        a = (a + a) % p              # «сдвиг» a влево
+        b >>= 1                      # сдвиг b вправо
+    return result
+
+
+@app.function
+def gfp_pow(a, e, p):
+    # бинарное возведение в степень в GF(p)
+    a %= p
+    result = 1
+    while e > 0:
+        if e & 1:
+            result = gfp_mul(result, a, p)
+        a = gfp_mul(a, a, p)         # возводим основание в квадрат
+        e >>= 1
+    return result
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Обратный элемент в $\mathrm{GF}(p)$ — малая теорема Ферма
+
+    **Малая теорема Ферма:** если $p$ — простое и $\gcd(a, p) = 1$, то:
+
+    $$a^{p-1} \equiv 1 \pmod{p}$$
+
+    Перепишем: $a \cdot a^{p-2} \equiv 1 \pmod{p}$. Сравниваем с определением обратного ($a \cdot a^{-1} = 1$):
+
+    $$a^{-1} \equiv a^{p-2} \pmod{p}$$
+
+    Поэтому, чтобы найти обратный к `a` в $\mathrm{GF}(p)$, достаточно возвести `a` в степень $p - 2$ — что мы уже умеем быстро через `gfp_pow`.
+    """)
+    return
+
+
+@app.function
+def gfp_inv(a, p):
+    # обратный по малой теореме Ферма: a^(p-2) ≡ a^(-1) (mod p)
+    return gfp_pow(a, p - 2, p)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # 12. Построение поля GF(256)
+
+    ## $\mathrm{GF}(2^n)$ — расширенное поле из $2^n$ элементов
+
+    $\mathrm{GF}(256) = \mathrm{GF}(2^8) = \mathrm{GF}(2)[x] / f(x)$, где $f(x)$ — неприводимый многочлен степени 8 над $\mathrm{GF}(2)$.
+
+    Стандартный выбор (AES): $f(x) = x^8 + x^4 + x^3 + x + 1$, в двоичном виде $0\mathtt{x11B}$.
+
+    Элементы поля — байты $0\ldots 255$: байт $b_7 b_6 \dots b_0$ кодирует многочлен $b_7 x^7 + \dots + b_0$.
+
+    - **Сложение** — побитовое XOR (коэффициенты складываются по модулю 2).
+    - **Умножение** — умножение многочленов плюс редукция по модулю $f(x)$.
+
+    **Трюк редукции:** при сдвиге $a \ll 1$, если выскочил 9-й бит, делаем XOR с $f(x) = 0\mathtt{x11B}$. Старший бит обнулится, остаётся XOR с $0\mathtt{x1B}$.
+
+    ## Обратный элемент в $\mathrm{GF}(256)$ — теорема Лагранжа
+
+    **Теорема Лагранжа (следствие для конечных групп):** в любой конечной группе порядка $n$ для каждого элемента $a$ выполняется:
+
+    $$a^n = e$$
+
+    где $e$ — нейтральный элемент группы.
+
+    **Применение к $\mathrm{GF}(256)$.** Ненулевые элементы $\mathrm{GF}(256)$ образуют **мультипликативную группу** $\mathrm{GF}(256)^*$ порядка $255 = 2^8 - 1$. Нейтральный элемент относительно умножения — это $1$. По теореме Лагранжа, для любого ненулевого $a$:
+
+    $$a^{255} = 1$$
+
+    Перепишем: $a \cdot a^{254} = 1$. Сравниваем с определением обратного:
+
+    $$a^{-1} = a^{254}$$
+
+    Это **обобщение малой теоремы Ферма** на расширенные поля. В $\mathrm{GF}(p^n)$ мультипликативная группа имеет порядок $p^n - 1$, и обратный считается как $a^{p^n - 2}$. Для $\mathrm{GF}(256)$ это $a^{254}$.
+    """)
+    return
+
+
+@app.function
+def gf256_add(a, b):
+    # сложение и вычитание в GF(256) — это XOR
+    return a ^ b
+
+
+@app.function
+def gf256_mul(a, b):
+    mod = 0x11B
+    result = 0
+    deg_mod = mod.bit_length() - 1
+
+    while b > 0:
+        if b & 1:
+            result ^= a
+        a <<= 1
+        if a.bit_length() > deg_mod:
+            a ^= mod
+        b >>= 1
+
+    return result
+
+
+@app.function
+def gf256_pow(a, e):
+    # бинарное возведение в степень в GF(256)
+    result = 1
+    while e > 0:
+        if e & 1:
+            result = gf256_mul(result, a)
+        a = gf256_mul(a, a)
+        e >>= 1
+    return result
+
+
+@app.function
+def gf256_inv(a):
+    # порядок мультипликативной группы равен 255, значит a^254 = a^(-1)
+    if a == 0:
+        raise ZeroDivisionError("0 в GF(256) необратим")
+    return gf256_pow(a, 254)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # 13. Нахождение неприводимых многочленов над GF(p)
+
+    ## Теория
+
+    **Критерий неприводимости через $x^{p^k}$.** Многочлен $f$ степени $n$ над $\mathrm{GF}(p)$ неприводим тогда и только тогда, когда
+    $$\gcd\bigl(f(x),\ x^{p^k} - x\bigr) = 1 \quad \text{для всех } k = 1, 2, \dots, \lfloor n/2 \rfloor.$$
+
+    **Объяснение.** Многочлен $x^{p^k} - x$ — это произведение **всех** неприводимых многочленов над $\mathrm{GF}(p)$, степени которых делят $k$. Если у $f$ есть собственный неприводимый множитель степени $\le n/2$, он обязательно «всплывёт» в каком-то $x^{p^k} - x$ и проявится в $\gcd$.
+
+    Нужны: арифметика в $\mathrm{GF}(p)[x]$ — деление с остатком, НОД, возведение в степень по модулю многочлена.
+    """)
+    return
+
+
+@app.function
+def poly_add_mod(a, b, p):
+    n = max(len(a), len(b))
+    r = []
+    for i in range(n):
+        ai = a[i] if i < len(a) else 0
+        bi = b[i] if i < len(b) else 0
+        r.append((ai + bi) % p)
+    return r
+
+
+@app.function
+def poly_sub_mod(a, b, p):
+    n = max(len(a), len(b))
+    r = []
+    for i in range(n):
+        ai = a[i] if i < len(a) else 0
+        bi = b[i] if i < len(b) else 0
+        r.append((ai - bi) % p)
+    return r
+
+
+@app.cell
+def _(poly_deg):
+    def poly_mul_mod(a, b, p):
+        if poly_deg(a) < 0 or poly_deg(b) < 0:
+            return [0]
+        r = [0] * (len(a) + len(b) - 1)
+        for i, ai in enumerate(a):
+            if ai == 0:
+                continue
+            for j, bj in enumerate(b):
+                r[i + j] = (r[i + j] + ai * bj) % p
+        return r
+
+    return (poly_mul_mod,)
+
+
+@app.cell
+def _(poly_deg):
+    def poly_divmod_mod(f, g, p):
+        # деление с остатком в GF(p)[x]
+        f = list(f)
+        g = list(g)
+        dg = poly_deg(g)
+        if dg < 0:
+            raise ZeroDivisionError
+        lc_inv = mod_inverse_euclid(g[dg], p)
+        df = poly_deg(f)
+        if df < dg:
+            return [0], poly_trim(f)
+        q = [0] * (df - dg + 1)
+        while poly_deg(f) >= dg:
+            d = poly_deg(f)
+            c = (f[d] * lc_inv) % p
+            q[d - dg] = c
+            for i in range(dg + 1):
+                f[d - dg + i] = (f[d - dg + i] - c * g[i]) % p
+        return poly_trim(q), poly_trim(f)
+
+    return (poly_divmod_mod,)
+
+
+@app.cell
+def _(poly_deg, poly_divmod_mod):
+    def poly_gcd_mod(a, b, p):
+        # НОД двух многочленов в GF(p)[x] (нормированный)
+        a = poly_trim(a)
+        b = poly_trim(b)
+        while poly_deg(b) >= 0:
+            _, r = poly_divmod_mod(a, b, p)
+            a, b = b, r
+        d = poly_deg(a)
+        if d < 0:
+            return [0]
+        inv = mod_inverse_euclid(a[d], p)
+        return [(c * inv) % p for c in a[: d + 1]]
+
+    return (poly_gcd_mod,)
+
+
+@app.cell
+def _(poly_divmod_mod, poly_mul_mod):
+    def poly_powmod(base, e, mod, p):
+        # base^e mod (многочлен mod), коэффициенты в GF(p)
+        result = [1]
+        _, base = poly_divmod_mod(base, mod, p)
+        while e > 0:
+            if e & 1:
+                _, result = poly_divmod_mod(poly_mul_mod(result, base, p), mod, p)
+            _, base = poly_divmod_mod(poly_mul_mod(base, base, p), mod, p)
+            e >>= 1
+        return result
+
+    return (poly_powmod,)
+
+
+@app.cell
+def _(poly_deg, poly_gcd_mod, poly_powmod):
+    def is_irreducible(f, p):
+        # проверка неприводимости через критерий x^(p^k)
+        n = poly_deg(f)
+        if n <= 0:
+            return False
+        if n == 1:
+            return True
+        x = [0, 1]                       # многочлен x
+        xpk = x[:]                       # будет хранить x^(p^k) mod f
+        for _ in range(1, n // 2 + 1):
+            xpk = poly_powmod(xpk, p, f, p)   # возводим в степень p — получаем x^(p^k)
+            diff = poly_sub_mod(xpk, x, p)
+            g = poly_gcd_mod(f, diff, p)
+            if poly_deg(g) > 0:
+                return False
+        return True
+
+    return (is_irreducible,)
+
+
+@app.cell
+def _(is_irreducible):
+    def find_irreducibles(n, p, limit=None):
+        # перебор нормированных многочленов степени n над GF(p)
+        found = []
+        total = p ** n
+        for code in range(total):
+            coeffs = []
+            c = code
+            for _ in range(n):
+                coeffs.append(c % p)
+                c //= p
+            coeffs.append(1)             # старший коэффициент = 1
+            if is_irreducible(coeffs, p):
+                found.append(coeffs)
+                if limit and len(found) >= limit:
+                    break
+        return found
+
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # 14. Квадратные уравнения в GF(p)
+
+    Решаем $a x^2 + b x + c = 0$ в $\mathrm{GF}(p)$, $p$ — нечётное простое.
+
+    ## Теория
+
+    Формула та же, что в школе: $x = \dfrac{-b \pm \sqrt{D}}{2a}$, где $D = b^2 - 4ac$. Но всё считается в $\mathrm{GF}(p)$:
+
+    - **«Деление»** на $2a$ — это умножение на обратный по модулю.
+    - **Извлечение $\sqrt{D}$** возможно тогда и только тогда, когда $D$ — квадратичный вычет: $D^{(p-1)/2} \equiv 1 \pmod{p}$ (**критерий Эйлера**).
+    - Если $D = 0$ — один корень кратности 2.
+    - Если $D$ не вычет — корней в $\mathrm{GF}(p)$ нет.
+
+    Извлечение квадратного корня — **алгоритм Тонелли–Шенкса**:
+    1. Записать $p - 1 = q \cdot 2^s$ с нечётным $q$.
+    2. Найти неквадратичный вычет $z$.
+    3. Через итерации «гасить» 2-компоненту в выражении.
+
+    > **О характеристике 2.** В $\mathrm{GF}(2^n)$ делить на $2a$ нельзя, и формула выше не работает. Там используют замену $x = b y / a$, после которой задача сводится к $y^2 + y = d$; решение существует тогда и только тогда, когда $\mathrm{Tr}(d) = 0$.
+    """)
+    return
+
+
+@app.function
+def is_qr(a, p):
+    # квадратичный вычет по критерию Эйлера
+    a %= p
+    if a == 0:
+        return True
+    return gfp_pow(a, (p - 1) // 2, p) == 1
+
+
+@app.function
+def tonelli_shanks(n, p):
+    # извлечение квадратного корня из n по модулю простого p; None — корня нет
+    n %= p
+    if n == 0:
+        return 0
+    if not is_qr(n, p):
+        return None
+    if p % 4 == 3:                   # быстрый случай
+        return gfp_pow(n, (p + 1) // 4, p)
+
+    # представляем p - 1 = q * 2^s, q — нечётное
+    q, s = p - 1, 0
+    while q % 2 == 0:
+        q //= 2
+        s += 1
+
+    # ищем неквадратичный вычет z
+    z = 2
+    while is_qr(z, p):
+        z += 1
+
+    m = s
+    c = gfp_pow(z, q, p)
+    t = gfp_pow(n, q, p)
+    r = gfp_pow(n, (q + 1) // 2, p)
+
+    while True:
+        if t == 1:
+            return r
+        # ищем наименьшее i, при котором t^(2^i) = 1
+        i, temp = 0, t
+        while temp != 1:
+            temp = gfp_mul(temp, temp, p)
+            i += 1
+        b = gfp_pow(c, 1 << (m - i - 1), p)
+        m = i
+        c = gfp_mul(b, b, p)
+        t = gfp_mul(t, c, p)
+        r = gfp_mul(r, b, p)
+
+
+@app.function
+def solve_quadratic_gfp(a, b, c, p):
+    # решает a*x^2 + b*x + c = 0 в GF(p), p — нечётное простое
+    a, b, c = a % p, b % p, c % p
+    if a == 0:                       # вырожденный случай — линейное уравнение
+        if b == 0:
+            return "любое x" if c == 0 else []
+        return [(-c * mod_inverse_euclid(b, p)) % p]
+
+    D = (b * b - 4 * a * c) % p
+    inv_2a = mod_inverse_euclid((2 * a) % p, p)
+
+    if D == 0:
+        return [(-b * inv_2a) % p]
+    if not is_qr(D, p):
+        return []                    # корней в GF(p) нет
+    sD = tonelli_shanks(D, p)
+    x1 = ((-b + sD) * inv_2a) % p
+    x2 = ((-b - sD) * inv_2a) % p
+    return sorted({x1, x2})
+
+
+@app.cell
+def _():
+    # x^2 + x + 1 = 0 в GF(7): корни {2, 4}, проверка 4+2+1=7≡0, 16+4+1=21≡0
+    print("x^2 + x + 1 = 0  в GF(7):  ", solve_quadratic_gfp(1, 1, 1, 7))
+    # x^2 - 3 = 0 в GF(7) — нет корней (3 не квадратичный вычет mod 7)
+    print("x^2 - 3 = 0      в GF(7):  ", solve_quadratic_gfp(1, 0, -3, 7))
+    # x^2 + 4x + 4 = 0 в GF(11): двойной корень x = -2 = 9
+    print("x^2 + 4x + 4 = 0 в GF(11): ", solve_quadratic_gfp(1, 4, 4, 11))
+    # в большом поле
+    p = 10 ** 9 + 7
+    print(f"x^2 + 3x + 2 = 0 в GF({p}): {solve_quadratic_gfp(1, 3, 2, p)}")
     return
 
 
